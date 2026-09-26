@@ -136,6 +136,46 @@ describe('MAIN-world usage projection', () => {
     await h.feedSse([`data: {"conversation_id":"${id}","metadata":{"request_id":"wfr_replaced"}}\n\n`]);
     expect(h.posts.filter(row => row.requestIds?.includes('wfr_replaced'))).toHaveLength(1);
   });
+  it('joins a request id in input_message to the conversation the same response named', async () => {
+    const h = harness(), conversation_id = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const request_id = '11111111-2222-4333-8444-555555555555';
+    await h.feedSse([
+      `data: ${JSON.stringify({ conversation_id, turn_topic_id: 'topic-1' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'input_message', input_message: { metadata: { request_id } } })}\n\n`
+    ], { method: 'POST' }, 'https://chatgpt.com/backend-api/f/conversation');
+    expect(h.posts.map(row => row.requestIds), 'the split join was never read').toEqual([[request_id]]);
+    expect(h.posts[0]!.conversationId).toBe(conversation_id);
+  });
+  it('abstains when a later event in the same response names a different conversation', async () => {
+    const h = harness(), conversation_id = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const other = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+    await h.feedSse([
+      `data: ${JSON.stringify({ conversation_id, turn_topic_id: 'topic-1' })}\n\n`,
+      `data: ${JSON.stringify({ conversation_id: other, type: 'input_message',
+        input_message: { metadata: { request_id: '11111111-2222-4333-8444-555555555555' } } })}\n\n`
+    ], { method: 'POST' }, 'https://chatgpt.com/backend-api/f/conversation');
+    expect(h.posts, 'a contradictory response published an origin anyway').toHaveLength(0);
+  });
+  it('does not let a nested conversation_id seed the response owner', async () => {
+    const h = harness(), nested = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    await h.feedSse([
+      `data: ${JSON.stringify({ type: 'other', payload: { conversation_id: nested } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'input_message',
+        input_message: { metadata: { request_id: '11111111-2222-4333-8444-555555555555' } } })}\n\n`
+    ], { method: 'POST' }, 'https://chatgpt.com/backend-api/f/conversation');
+    expect(h.posts, 'nested conversation metadata became request ownership').toHaveLength(0);
+  });
+  it('clears a cached response owner after a multi-conversation frame', async () => {
+    const h = harness(), conversation_id = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const other = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+    await h.feedSse([
+      `data: ${JSON.stringify({ conversation_id, turn_topic_id: 'topic-1' })}\n\n`,
+      `data: ${JSON.stringify({ conversation_id, nested: { conversation_id: other } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'input_message',
+        input_message: { metadata: { request_id: '11111111-2222-4333-8444-555555555555' } } })}\n\n`
+    ], { method: 'POST' }, 'https://chatgpt.com/backend-api/f/conversation');
+    expect(h.posts, 'ambiguous response state retained stale request ownership').toHaveLength(0);
+  });
   it('requires a fresh document for a legacy observer without a disposal handle', () => {
     const h = harness(); h.markLegacy(); const before = h.currentFetch();
     h.evaluate(); expect(h.needsReload()).toBe(true); expect(h.currentFetch()).toBe(before);

@@ -980,12 +980,17 @@ function parseCallEvidence(input: unknown, untooled = false): PageCallEvidence[]
     const tool = typeof item['tool'] === 'string' && TOOL_NAME.test(item['tool']) ? item['tool'] : '';
     const messageId = typeof item['messageId'] === 'string' ? item['messageId'].slice(0, 120) : '';
     const bare = untooled && typeof item['requestId'] === 'string';
-    if ((!tool && !bare) || !messageId) continue;
-    if (seen.has(messageId)) {
-      duplicated.add(messageId);
+    if (!tool && !bare) continue;
+    // Stream request origins arrive before ChatGPT has mounted a provider message, so
+    // /correlations legitimately receives messageId:null. Bare rows are keyed by their
+    // request id; named rows keep using the provider message id.
+    const key = messageId || `request:${item['requestId'] as string}`;
+    if (!messageId && !bare) continue;
+    if (seen.has(key)) {
+      duplicated.add(key);
       continue;
     }
-    seen.add(messageId);
+    seen.add(key);
     out.push({
       messageId,
       tool,
@@ -1003,7 +1008,7 @@ function parseCallEvidence(input: unknown, untooled = false): PageCallEvidence[]
         typeof item['createTime'] === 'number' && Number.isFinite(item['createTime']) ? item['createTime'] : null
     });
   }
-  return out.filter((call) => !duplicated.has(call.messageId));
+  return out.filter((call) => !duplicated.has(call.messageId || `request:${call.requestId}`));
 }
 
 /**
@@ -1240,6 +1245,31 @@ function conversationId(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   // ChatGPT conversation ids are uuid-shaped; anything else is not one.
   return /^[0-9a-f-]{8,64}$/i.test(value) ? value : null;
+}
+
+/**
+ * Recovers a fresh worker's exact broker binding from the same redeemed command proof used by
+ * `/events`. The friendly worker label is never authority by itself: the random command id must
+ * still name a leased worker command for that exact label in a live run. Callers additionally
+ * prove the browser's concrete conversation before reaching this helper.
+ */
+function recoverPendingWorkerBinding(id: string, rawAgent: unknown, rawCommandId: unknown): boolean {
+  const reportedAgent = typeof rawAgent === 'string' && /^[a-z0-9-]{1,40}$/i.test(rawAgent)
+    ? rawAgent
+    : null;
+  const reportedCommandId = typeof rawCommandId === 'string' ? rawCommandId : null;
+  if (!reportedAgent || !reportedCommandId) return false;
+  const pending = commands.find(
+    (command) =>
+      command.id === reportedCommandId &&
+      command.spec.type === 'worker' &&
+      command.spec.agent === reportedAgent &&
+      swarmRunning(command.spec.runId) &&
+      command.claimedAt !== null
+  );
+  return pending?.spec.type === 'worker'
+    ? bindConversation(reportedAgent, id, pending.spec.runId)
+    : false;
 }
 
 const MAX_ACTIVITY_CALL_ID_CHARS = 200;
@@ -2076,6 +2106,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const calls = parseCallEvidence(body['calls'], true).filter((call) => call.requestId !== null);
     if (calls.length === 0) return json(res, 400, { error: 'bad_request_evidence' }, origin);
 
+    // The browser has already proved that this exact document is currently on `id` before it
+    // sends `/correlations`. A fresh worker can reach this point before the authored bootstrap
+    // row is available for `/commands/ack`; recover the worker binding from the exact random
+    // command it redeemed so the first MCP call is released only after membership exists.
+    recoverPendingWorkerBinding(id, body['agent'], body['agentCommandId']);
+
     // This is the live-turn ownership handshake, deliberately separate from transcript
     // delivery. A fresh ChatGPT conversation can expose metadata.request_id before its
     // internal clientThreadId has converged on the final /c/<id>. Piggybacking ownership on
@@ -2135,21 +2171,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // exact random command id it redeemed; only that exact (agent, command) pair may recover a
     // still-leased worker. Old extension builds omit agentCommandId and safely lose recovery
     // rather than guess from the friendly worker label.
-    const reportedAgent = typeof body['agent'] === 'string' && /^[a-z0-9-]{1,40}$/i.test(body['agent'])
-      ? body['agent']
-      : null;
-    const reportedCommandId = typeof body['agentCommandId'] === 'string' ? body['agentCommandId'] : null;
-    if (reportedAgent && reportedCommandId) {
-      const pending = commands.find(
-        (command) =>
-          command.id === reportedCommandId &&
-          command.spec.type === 'worker' &&
-          command.spec.agent === reportedAgent &&
-          swarmRunning(command.spec.runId) &&
-          command.claimedAt !== null
-      );
-      if (pending?.spec.type === 'worker') bindConversation(reportedAgent, id, pending.spec.runId);
-    }
+    recoverPendingWorkerBinding(id, body['agent'], body['agentCommandId']);
     // This reports attachment only. The recorder below owns actual work and replay deduplication.
     const revived = noteAgentAlive(id, 'page');
     if (revived?.report) await recordAgentMessage(revived.report, 'sent', id);

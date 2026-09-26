@@ -146,12 +146,31 @@
       }
       // One complete server event must carry both sides of the join. Retaining an id from a
       // prior frame would turn response order into authority; a contradictory frame abstains.
-      if (conversations.size !== 1) return;
-      const conversationId = conversations.values().next().value;
+      // ChatGPT now splits the two sides of the request-origin join across consecutive
+      // events in one /f/conversation response. Remember the one conversation named by
+      // this response for later events that omit it; contradictory events still abstain.
+      if (conversations.size > 1) { stream.conversationId = null; return; }
+      const rootConversation = typeof body?.conversation_id === 'string' && CONVERSATION.test(body.conversation_id)
+        ? body.conversation_id : null;
+      const seen = conversations.size === 1 ? conversations.values().next().value : null;
+      if (rootConversation) {
+        if (seen !== rootConversation || (stream.conversationId && stream.conversationId !== rootConversation)) {
+          stream.conversationId = null;
+          return;
+        }
+        stream.conversationId = rootConversation;
+      } else if (seen && (!stream.conversationId || stream.conversationId !== seen)) {
+        // A nested conversation_id is neither proof nor a replacement for the response owner.
+        // If it contradicts an already-proven response owner, retire that owner fail-closed.
+        if (stream.conversationId) stream.conversationId = null;
+        return;
+      }
+      const conversationId = stream.conversationId;
+      if (!conversationId) return;
       // Only server metadata in a complete JSON event owns a request id. A key in
       // quoted model text, tool arguments or an unrelated nested object is not proof.
-      if (body?.conversation_id !== conversationId) return;
-      const requestIds = new Set([body.metadata?.request_id, body.message?.metadata?.request_id]
+      const requestIds = new Set([body?.metadata?.request_id, body?.message?.metadata?.request_id,
+        body?.input_message?.metadata?.request_id]
         .filter(id => typeof id === 'string' && REQUEST.test(id)));
       return requestIds.size ? { conversationId, requestIds: [...requestIds] } : null;
   }

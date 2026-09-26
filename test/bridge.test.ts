@@ -1280,6 +1280,32 @@ describe('activity feed', () => {
     expect(refused.body).toMatchObject({ error: 'bad_request_evidence' });
   });
 
+  it('registers a stream origin the page cannot yet name a message for', async () => {
+    await pair();
+    const conversationId = '17171717-3939-6161-8383-959595959595';
+    const requestId = '11111111-2222-4333-8444-555555555555';
+    const mapped = await request('POST', '/correlations', {
+      body: { conversationId, calls: [{ messageId: null, requestId, createTime: Date.now() / 1000 }] }
+    });
+    expect(mapped.status, 'the stream origin was refused').toBe(200);
+    expect(mapped.body).toMatchObject({ ok: true, conversationId, confirmed: [requestId], complete: true });
+  });
+
+  it('keeps two stream origins apart when neither names a message', async () => {
+    await pair();
+    const conversationId = '18181818-4040-6262-8484-969696969696';
+    const first = '21111111-2222-4333-8444-555555555555';
+    const second = '31111111-2222-4333-8444-555555555555';
+    const mapped = await request('POST', '/correlations', {
+      body: { conversationId, calls: [
+        { messageId: null, requestId: first, createTime: Date.now() / 1000 },
+        { messageId: null, requestId: second, createTime: Date.now() / 1000 }
+      ] }
+    });
+    expect(mapped.status).toBe(200);
+    expect((mapped.body as { confirmed: string[] }).confirmed.sort()).toEqual([first, second].sort());
+  });
+
   it('refuses a live handshake that contradicts an already-proven request owner without poisoning the original mapping', async () => {
     await pair();
     const firstConversation = '14141414-3636-5858-8080-929292929292';
@@ -3448,6 +3474,37 @@ describe('delivering a bootstrap', () => {
         agent: 'worker-1',
         agentCommandId: command.id,
         events: [{ kind: 'progress', time: Date.now(), text: 'same-run recovery' }]
+      }
+    });
+    expect(recovered.status).toBe(200);
+    const worker = swarmState().agents.find((agent) => agent.id === 'worker-1')!;
+    expect(worker.state).toBe('active');
+    expect(worker.conversationId).toBe(conversationId);
+  });
+
+  it('binds a fresh worker from exact request correlation only with its redeemed command id', async () => {
+    await pair();
+    spawn({ workers: [{ task: 'bind before first agents call' }], caller: { conversationId: PRIME_CHAT } });
+    const command = await redeem(undefined, 'worker-correlation-page');
+    expect(command.agent).toBe('worker-1');
+    const conversationId = 'dddddddd-1111-2222-3333-444444444444';
+
+    const unproven = await request('POST', '/correlations', {
+      body: {
+        conversationId,
+        agent: 'worker-1',
+        calls: [{ messageId: null, requestId: 'wfr_worker_correlation_unproven', createTime: Date.now() / 1000 }]
+      }
+    });
+    expect(unproven.status).toBe(200);
+    expect(swarmState().agents.find((agent) => agent.id === 'worker-1')?.conversationId).toBeNull();
+
+    const recovered = await request('POST', '/correlations', {
+      body: {
+        conversationId,
+        agent: 'worker-1',
+        agentCommandId: command.id,
+        calls: [{ messageId: null, requestId: 'wfr_worker_correlation_exact', createTime: Date.now() / 1000 }]
       }
     });
     expect(recovered.status).toBe(200);

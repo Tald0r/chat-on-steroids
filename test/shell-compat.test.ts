@@ -724,9 +724,37 @@ it.each(['immediate', 'hydrating', 'foreign', 'retired'])('binds the fresh backg
         expect.objectContaining({ id: commandId, status: 'sent', conversationId: THREAD, agent: 'worker-1' })
       ]), { timeout: 2000 });
       await vi.waitFor(() => expect(r.sent.some(message => message.type === 'correlate' &&
-        message.conversationId === THREAD && message.calls.some((call: any) => call.requestId === OTHER))).toBe(true));
+        message.conversationId === THREAD && message.agent === 'worker-1' && message.agentCommandId === commandId &&
+        message.calls.some((call: any) => call.requestId === OTHER))).toBe(true));
       expect(clicked).toBe(1); expect(f.doc.visibilityState).toBe('hidden');
     }
+  } finally { (f.win as any).__CLF_CONTENT_RECORDER__.stop(); }
+});
+
+it('holds an early fresh-worker stream origin until the redeemed command proof is installed', async () => {
+  const f = fixture(), edit = editing(f), commandId = 'early-origin-worker', text = 'Report through agents immediately.';
+  const native = f.doc.querySelector('[data-turn-key]')!;
+  native.remove(); page.reconfigure({ url: `https://chatgpt.com/?clf=${commandId}` });
+  f.entry.turn.items[0].message = text;
+  native.querySelector('.whitespace-pre-wrap')!.textContent = text;
+  let clicked = 0;
+  f.doc.querySelector('button[type="submit"]')!.addEventListener('click', event => {
+    event.preventDefault(); clicked++; edit.box.replaceChildren();
+    f.win.history.pushState({}, '', `/c/${THREAD}`);
+    f.win.postMessage({ type: 'cos-request-origin', conversationId: THREAD, requestIds: [OTHER], observedAt: Date.now() }, f.win.location.origin);
+    f.doc.querySelector('[data-thread-find-target]')!.append(native);
+  });
+  const r = await recorder(f, { redeem: () => ({ ok: true, command: { id: commandId, type: 'worker', text, agent: 'worker-1' } }) }, false);
+  try {
+    await vi.waitFor(() => expect(clicked).toBe(1));
+    await vi.waitFor(() => expect(r.sent.some(message => message.type === 'correlate' &&
+      message.conversationId === THREAD && message.calls.some((call: any) => call.requestId === OTHER))).toBe(true));
+    const correlations = r.sent.filter(message => message.type === 'correlate' &&
+      message.conversationId === THREAD && message.calls.some((call: any) => call.requestId === OTHER));
+    expect(correlations).toHaveLength(1);
+    expect(correlations[0]).toMatchObject({ agent: 'worker-1', agentCommandId: commandId });
+    expect(r.sent.some(message => message.type === 'correlate' &&
+      message.calls.some((call: any) => call.requestId === OTHER) && !message.agentCommandId)).toBe(false);
   } finally { (f.win as any).__CLF_CONTENT_RECORDER__.stop(); }
 });
 

@@ -4039,11 +4039,15 @@ describe('extension connection', () => {
     const reply = await worker.send({
       type: 'correlate',
       conversationId,
+      agent: 'worker-1',
+      agentCommandId: 'worker-command-123',
       calls: [{ messageId: 'request-message', tool: 'exec_command', order: 0, answered: false, requestId }]
     });
 
     expect(body).toMatchObject({
       conversationId,
+      agent: 'worker-1',
+      agentCommandId: 'worker-command-123',
       calls: [expect.objectContaining({ requestId, messageId: 'request-message' })]
     });
     expect(reply).toMatchObject({
@@ -4074,6 +4078,8 @@ describe('extension connection', () => {
     await expect(worker.send({
       type: 'correlate',
       conversationId,
+      agent: 'worker-1',
+      agentCommandId: 'worker-command-123',
       calls: [{ messageId: 'request-message', tool: 'exec_command', order: 0, answered: false,
         requestId: 'f0f00009-1111-4111-8111-111111111111' }]
     })).resolves.toMatchObject({ ok: false, error: 'stale_document' });

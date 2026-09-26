@@ -3713,7 +3713,9 @@
         type: 'correlate',
         conversationId: ownerConversation,
         calls: batch,
-        projectInput
+        projectInput,
+        agent,
+        agentCommandId
       }, owns);
       if (!owns()) return;
       const data = reply && reply.ok === true && reply.data && typeof reply.data === 'object' ? reply.data : null;
@@ -10292,7 +10294,11 @@
     // a response here means this document owns the durable lease, not merely that an async
     // attempt was started. If the fallback got there first, `boot` is null and the false path
     // above leaves that winning tab alive.
-    if (attempt) attempt.phase = 'claimed';
+    if (attempt) {
+      attempt.phase = 'claimed';
+      attempt.commandType = typeof boot.type === 'string' ? boot.type : null;
+      attempt.agent = typeof boot.agent === 'string' ? boot.agent : null;
+    }
     reportClaim(true);
 
     const fail = (why) => {
@@ -10506,6 +10512,11 @@
     }
     agent = boot.agent || null;
     agentCommandId = agent && typeof boot.id === 'string' ? boot.id : null;
+    // The request-origin stream can beat sendSubmittedText() back from native Send. A fresh
+    // worker must not consume that exact conversation/request pair before its redeemed random
+    // command proof is installed, or /correlations can attribute the request but cannot recover
+    // broker membership. Reflush immediately now that the exact command proof is available.
+    flushStreamRequestOrigins();
 
     // A resume is committed from its unique server-authored marker: refreshFiber() performs that
     // commit before ordinary journal events, which also prevents a shadow session from claiming
@@ -10711,6 +10722,9 @@
   });
   function flushStreamRequestOrigins() {
     const route = CLF_DOM.conversationId();
+    const freshWorkerProofPending = commandAttempt?.phase === 'claimed' &&
+      commandAttempt?.commandType === 'worker' && commandAttempt?.agent && !agentCommandId;
+    if (freshWorkerProofPending) return;
     const pendingEpoch = epoch, calls = [];
     for (const [requestId, pending] of pendingStreamOrigins) {
       if (!alive || pending.epoch !== epoch || Date.now() >= pending.deadline || (route && route !== pending.conversationId)) {

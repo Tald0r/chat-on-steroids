@@ -490,8 +490,13 @@ For a reserved New Chat opening, the shared `/input/bind` route commits its exac
 only that claim retires, and its promoted conversation/document epoch precedes correlation or event publication.
 Ownership acknowledgement is separate from slow transcript/image writes.
 
-`usage.js` can also project an exact conversation/request pair from a complete live POST
-conversation SSE event before Fiber exposes it. Reads are bounded to 4 MiB / 15 minutes,
+`usage.js` can also project an exact conversation/request pair from one live POST conversation
+SSE response before Fiber exposes it. ChatGPT may split that exact join across complete events in
+the same response: one root event names `conversation_id`, while a later `input_message` root
+event carries `input_message.metadata.request_id`. Only a root `conversation_id` may seed that
+response-local owner; nested occurrences never become authority. A contradictory or
+multi-conversation event clears the retained owner and abstains. Reads are
+bounded to 4 MiB / 15 minutes,
 two simultaneous clones and 16 request ids per stream; only server metadata is accepted.
 The native WebSocket `conversation-turn-stream` handoff uses the same complete-event parser,
 requiring its outer conversation to match the inner event. It observes existing messages on
@@ -499,8 +504,9 @@ ChatGPT secure sockets without sending, subscribing or polling; envelopes and fr
 Native v1 delta headers may omit repeated channel/path/operation fields. The observer retains
 only those bounded format fields per HTTP response, or per linked conversation/turn socket
 stream. Missing predecessors, malformed/unknown encoding and retired streams discard that
-state. Identity still requires both ids in one complete root value; partial values, message
-text and cached answer branches never supply the join.
+state. Identity still requires complete server-owned root values in the same bounded response
+or linked stream; the response-local split join above is the only retained cross-event request
+origin. Partial values, message text and cached answer branches never supply the join.
 A 64-pair document cache deduplicates both transports and replays IDs at content readiness.
 Content requires the matching route and document epoch, retaining one-shot stream proof through
 temporary ACK failures for at most 15 minutes using the existing observer/backoff. Missing stream
@@ -2358,6 +2364,19 @@ If late proof identifies a provisional prime as an existing worker, its accepted
 attached to that worker's real root prime; the worker cannot control descendants or spawn more.
 Spawn acceptance remains atomic when proof arrives during its disk barrier: the unpublished
 family prevents a duplicate but remains hidden from status until accepted.
+
+A fresh worker can make its first MCP call before the authored bootstrap row is available for
+the ordinary `/commands/ack`, but only after the MAIN-world stream has exposed an exact request
+id and the browser route has become a concrete conversation. If that stream origin arrives while
+the claimed fresh-worker Send is still returning and the redeemed random command id has not yet
+been installed in content-script state, the origin is retained rather than correlated without
+worker proof. Installing the command proof immediately re-flushes it. That request-origin
+correlation therefore carries the current worker label plus the exact random command id this
+document redeemed.
+`/correlations` may recover the broker binding only when that `(agent, command id)` still names
+a leased fresh-worker command in a live run. The friendly worker label is never authority by
+itself, and no timing, `run_id`, focus, sole-family or sole-worker inference participates. The
+same helper is shared with `/events` lost-ACK recovery so both paths enforce one binding rule.
 
 Worker model and reasoning belong to the user's saved app settings by default. Model-visible
 instructions and the agents schema require omitting each override unless the user explicitly
